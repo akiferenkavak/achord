@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gitar Akort Uygulaması</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <div class="tuner-container">
+        <h1>Gitar Akortçu</h1>
+
+        <!-- Bağlantı durumu -->
+        <div class="ws-status" id="ws-status">⬤ Bağlı değil</div>
+
+        <!-- Yarım daire gauge -->
+        <div class="gauge">
+            <div class="gauge-marks">
+                <span class="mark mark-left">♭</span>
+                <span class="mark mark-center">|</span>
+                <span class="mark mark-right">♯</span>
+            </div>
+            <div class="needle" id="needle"></div>
+            <div class="center-point"></div>
+        </div>
+
+        <!-- Nota ve frekans -->
+        <div class="note-display">
+            <span id="current-note">—</span>
+            <p id="status-text">Standart Akort</p>
+            <small id="freq-text"></small>
+        </div>
+
+        <!-- Tel seçimi -->
+        <div class="strings">
+            <button class="string-btn" onclick="selectString(0)">E</button>
+            <button class="string-btn" onclick="selectString(1)">A</button>
+            <button class="string-btn" onclick="selectString(2)">D</button>
+            <button class="string-btn" onclick="selectString(3)">G</button>
+            <button class="string-btn" onclick="selectString(4)">B</button>
+            <button class="string-btn active" onclick="selectString(5)">e</button>
+        </div>
+
+        <button class="start-btn" id="start-btn" onclick="toggleConnection()">
+            Mikrofonu Başlat
+        </button>
+    </div>
+
+    <script>
+        // ─── WebSocket URL (http → ws, https → wss otomatik) ─────────────────
+        const WS_PROTO = location.protocol === 'https:' ? 'wss' : 'ws';
+        const WS_URL   = `${WS_PROTO}://${location.hostname || 'localhost'}:8765`;
+
+        let ws          = null;
+        let connected   = false;
+        let selectedStr = 5;
+
+        // ─── Tel seçimi ───────────────────────────────────────────────────────
+        function selectString(i) {
+            selectedStr = i;
+            document.querySelectorAll('.string-btn').forEach((b, j) =>
+                b.classList.toggle('active', j === i)
+            );
+        }
+
+        // ─── Bağlan / Kes ─────────────────────────────────────────────────────
+        function toggleConnection() {
+            if (!connected) connect();
+            else            disconnect();
+        }
+
+        function connect() {
+            try { ws = new WebSocket(WS_URL); }
+            catch(e) { setWsIndicator(false, true); return; }
+
+            ws.onopen = () => {
+                connected = true;
+                document.getElementById('start-btn').textContent = 'Durdur';
+                document.getElementById('start-btn').classList.add('active');
+                setWsIndicator(true);
+            };
+
+            ws.onmessage = (ev) => {
+                try { handleData(JSON.parse(ev.data)); } catch(_) {}
+            };
+
+            ws.onclose = () => {
+                connected = false;
+                document.getElementById('start-btn').textContent = 'Mikrofonu Başlat';
+                document.getElementById('start-btn').classList.remove('active');
+                setWsIndicator(false);
+                resetUI();
+            };
+
+            ws.onerror = () => {
+                setWsIndicator(false, true);
+                setStatus('Sunucuya ulaşılamadı!', 'error');
+            };
+        }
+
+        function disconnect() {
+            if (ws) ws.close();
+        }
+
+        function setWsIndicator(ok, err = false) {
+            const el = document.getElementById('ws-status');
+            if (err)      { el.textContent = '⬤ Hata';        el.className = 'ws-status error'; }
+            else if (ok)  { el.textContent = '⬤ Bağlandı';    el.className = 'ws-status ok';    }
+            else          { el.textContent = '⬤ Bağlı değil'; el.className = 'ws-status';       }
+        }
+
+        // ─── Gelen veriyi UI'a yansıt ─────────────────────────────────────────
+        function handleData(data) {
+            if (data.silent) {
+                setNeedle(0);
+                setStatus('Ses bekleniyor...', '');
+                return;
+            }
+
+            const { note, octave, cents, freq } = data;
+
+            // Nota
+            document.getElementById('current-note').textContent = note + octave;
+            document.getElementById('freq-text').textContent    = freq + ' Hz';
+
+            // İğne: cents -50..+50 → açı -75°..+75°
+            setNeedle(cents);
+
+            // Durum mesajı ve renk
+            if (Math.abs(cents) <= 5) {
+                setStatus('✓ Tam Akort', 'in-tune');
+            } else if (cents > 5) {
+                setStatus('▲ Teli Gevşet', 'sharp');
+            } else {
+                setStatus('▼ Teli Ger', 'flat');
+            }
+        }
+
+        // ─── Gauge iğnesi ────────────────────────────────────────────────────
+        // cents: -50 → -75°  |  0 → 0°  |  +50 → +75°
+        function setNeedle(cents) {
+            const angle = Math.max(-75, Math.min(75, cents * 1.5));
+            document.getElementById('needle').style.transform =
+                `translateX(-50%) rotate(${angle}deg)`;
+        }
+
+        // ─── Durum metni + renk ───────────────────────────────────────────────
+        function setStatus(text, cls) {
+            const noteEl   = document.getElementById('current-note');
+            const statusEl = document.getElementById('status-text');
+            statusEl.textContent = text;
+            noteEl.className     = cls;
+        }
+
+        // ─── Sıfırla ─────────────────────────────────────────────────────────
+        function resetUI() {
+            document.getElementById('current-note').textContent = '—';
+            document.getElementById('current-note').className   = '';
+            document.getElementById('freq-text').textContent    = '';
+            setStatus('Standart Akort', '');
+            setNeedle(0);
+        }
+    </script>
+</body>
+</html>

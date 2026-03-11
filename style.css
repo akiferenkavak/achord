@@ -1,0 +1,194 @@
+body {
+    background-color: #121212;
+    color: white;
+    font-family: 'Segoe UI', sans-serif;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    margin: 0;
+}
+
+.tuner-container {
+    text-align: center;
+    background: #1e1e1e;
+    padding: 2rem;
+    border-radius: 20px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    width: 350px;
+}
+
+h1 {
+    margin: 0 0 0.5rem;
+    font-size: 1.4rem;
+    letter-spacing: 2px;
+    color: #aaa;
+}
+
+/* ─── Bağlantı durumu ─────────────────────────────────── */
+.ws-status {
+    font-size: 0.7rem;
+    letter-spacing: 1px;
+    color: #555;
+    margin-bottom: 1rem;
+    transition: color 0.3s;
+}
+
+.ws-status.ok    { color: #2ed573; }
+.ws-status.error { color: #ff4757; }
+
+/* ─── Gauge ───────────────────────────────────────────── */
+.gauge {
+    position: relative;
+    width: 200px;
+    height: 100px;
+    border: 4px solid #333;
+    border-bottom: none;
+    border-radius: 100px 100px 0 0;
+    margin: 0 auto 0;
+    overflow: hidden;
+}
+
+/* İşaret çizgileri */
+.gauge-marks {
+    position: absolute;
+    bottom: 6px;
+    left: 0;
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+    padding: 0 10px;
+    font-size: 13px;
+    color: #444;
+    pointer-events: none;
+}
+
+.mark-center {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: 0;
+    font-size: 16px;
+    color: #555;
+}
+
+/* İğne */
+.needle {
+    position: absolute;
+    bottom: 0;
+    left: 50%;
+    width: 4px;
+    height: 80px;
+    background: #ff4757;
+    transform-origin: bottom center;
+    transform: translateX(-50%) rotate(0deg);
+    transition: transform 0.15s ease-out;
+    border-radius: 2px 2px 0 0;
+}
+
+.center-point {
+    position: absolute;
+    bottom: -6px;
+    left: 50%;
+    width: 12px;
+    height: 12px;
+    background: #ff4757;
+    border-radius: 50%;
+    transform: translateX(-50%);
+}
+
+/* ─── Nota ekranı ─────────────────────────────────────── */
+.note-display {
+    margin: 1rem 0 0.5rem;
+    min-height: 90px;
+}
+
+.note-display #current-note {
+    font-size: 3.5rem;
+    font-weight: bold;
+    display: block;
+    color: #888;
+    transition: color 0.2s;
+    line-height: 1.1;
+}
+
+/* Akort durumuna göre renkler */
+.note-display #current-note.in-tune { color: #2ed573; }
+.note-display #current-note.sharp   { color: #00d9ff; }
+.note-display #current-note.flat    { color: #ffa502; }
+.note-display #current-note.error   { color: #ff4757; }
+
+.note-display p {
+    margin: 4px 0 2px;
+    font-size: 0.8rem;
+    color: #555;
+    letter-spacing: 1px;
+}
+
+.note-display small {
+    font-size: 0.75rem;
+    color: #444;
+    letter-spacing: 1px;
+    display: block;
+    height: 16px;
+}
+
+/* ─── Tel butonları ───────────────────────────────────── */
+.strings {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 20px;
+    gap: 4px;
+}
+
+.string-btn {
+    background: #333;
+    border: none;
+    color: white;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: bold;
+    transition: background 0.2s, transform 0.1s;
+}
+
+.string-btn:hover {
+    background: #444;
+    transform: scale(1.08);
+}
+
+.string-btn.active {
+    background: #2ed573;
+    color: #121212;
+    font-weight: bold;
+}
+
+/* ─── Başlat butonu ───────────────────────────────────── */
+.start-btn {
+    margin-top: 24px;
+    padding: 12px 25px;
+    border-radius: 25px;
+    border: none;
+    background: #5352ed;
+    color: white;
+    font-size: 1rem;
+    cursor: pointer;
+    width: 100%;
+    transition: background 0.2s, transform 0.1s;
+    letter-spacing: 1px;
+}
+
+.start-btn:hover {
+    background: #6c6bff;
+    transform: scale(1.02);
+}
+
+.start-btn.active {
+    background: #ff4757;
+}
+
+.start-btn.active:hover {
+    background: #ff6b7a;
+}

@@ -1,17 +1,15 @@
 """
-Gitar Akort Uygulaması - Python Backend (Sunucu Uyumlu)
-Gereksinimler: pip install numpy websockets
+Gitar Akort Uygulaması - Python Backend
+Gereksinimler: pip install numpy websockets aiohttp
 
-Mikrofon tarayıcıda açılır → ham Float32 ses verisi WebSocket ile buraya gelir
-→ Python CMNDF ile pitch hesaplar → sonuç JSON olarak tarayıcıya geri gönderilir.
-PyAudio / PortAudio KULLANILMAZ — bulut sunucularda çalışır.
+Tek port üzerinden hem HTTP (index.html, style.css) hem WebSocket (/ws) sunar.
+Render ve benzeri bulut platformlarında sorunsuz çalışır.
 
 Çalıştırma:
     python tuner_server.py
 
-Render / sunucu için ortam değişkenleri:
-    WS_HOST=0.0.0.0   (varsayılan: localhost)
-    WS_PORT=8765       (varsayılan: 8765)
+Ortam değişkenleri:
+    PORT=8765   (Render otomatik tanımlar)
 """
 
 import asyncio
@@ -20,11 +18,11 @@ import os
 import struct
 import numpy as np
 import websockets
+from aiohttp import web
 
 # ─── Ayarlar ──────────────────────────────────────────────────────────────────
+PORT        = int(os.environ.get("PORT", 8765))
 SAMPLE_RATE = 44100
-WS_HOST     = os.environ.get("WS_HOST", "0.0.0.0")
-WS_PORT     = int(os.environ.get("WS_PORT", 8765))
 
 # ─── Kromatik nota isimleri ───────────────────────────────────────────────────
 NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B']
@@ -38,13 +36,11 @@ def freq_to_note(freq: float) -> dict:
     semitones_from_a4 = 12 * np.log2(freq / 440.0)
     nearest_semitone  = round(semitones_from_a4)
     cents             = (semitones_from_a4 - nearest_semitone) * 100
-
-    note_index = (nearest_semitone + 9) % 12
-    octave     = 4 + (nearest_semitone + 9) // 12
-    note_name  = NOTE_NAMES[note_index]
+    note_index        = (nearest_semitone + 9) % 12
+    octave            = 4 + (nearest_semitone + 9) // 12
 
     return {
-        "note":   note_name,
+        "note":   NOTE_NAMES[note_index],
         "octave": str(octave),
         "cents":  round(float(cents), 1),
         "freq":   round(float(freq), 2),
@@ -54,33 +50,28 @@ def freq_to_note(freq: float) -> dict:
 # ─── CMNDF (YIN) Pitch Detection ─────────────────────────────────────────────
 def detect_pitch(f: np.ndarray, sample_rate: int,
                  bounds: tuple = (60, 1200), thresh: float = 0.10) -> float | None:
-    """
-    YIN algoritmasının CMNDF adımı ile pitch tespiti.
-    f: float32 numpy array (tarayıcıdan gelen ham ses verisi)
-    """
-    W = len(f) // 2
-
+    W       = len(f) // 2
     min_lag = max(2, int(sample_rate / bounds[1]))
     max_lag = min(len(f) - W - 1, int(sample_rate / bounds[0]))
 
     if min_lag >= max_lag:
         return None
 
-    lags = np.arange(min_lag, max_lag)
-
-    # ── 1. Adım: Difference Function (DF) ────────────────────────────────────
+    lags        = np.arange(min_lag, max_lag)
     window_data = f[:W]
+
+    # 1. Difference Function
     df_values = np.array([
         np.sum((window_data - f[lag: lag + W]) ** 2)
         for lag in lags
     ])
 
-    # ── 2. Adım: CMNDF ───────────────────────────────────────────────────────
+    # 2. CMNDF
     cumsum_df    = np.cumsum(df_values)
     running_mean = cumsum_df / (np.arange(1, len(df_values) + 1))
     cmndf_vals   = df_values / (running_mean + 1e-20)
 
-    # ── 3. Adım: Eşiğin altındaki ilk yerel minimum ──────────────────────────
+    # 3. Eşik altındaki ilk yerel minimum
     sample_lag = None
     for i in range(1, len(cmndf_vals) - 1):
         if (cmndf_vals[i] < thresh
@@ -95,47 +86,38 @@ def detect_pitch(f: np.ndarray, sample_rate: int,
             return None
         sample_lag = int(lags[min_idx])
 
-    # ── 4. Adım: Parabolic interpolation ─────────────────────────────────────
+    # 4. Parabolic interpolation
     rel = sample_lag - min_lag
     if 0 < rel < len(cmndf_vals) - 1:
         y0, y1, y2 = cmndf_vals[rel - 1], cmndf_vals[rel], cmndf_vals[rel + 1]
         denom = 2 * (2 * y1 - y0 - y2)
         if abs(denom) > 1e-10:
-            delta      = (y0 - y2) / denom
-            sample_lag = sample_lag + delta
+            sample_lag = sample_lag + (y0 - y2) / denom
 
     return float(sample_rate / sample_lag)
 
 
-# ─── Sessizlik kontrolü ───────────────────────────────────────────────────────
 def rms(data: np.ndarray) -> float:
     return float(np.sqrt(np.mean(data ** 2)))
 
 
 # ─── WebSocket handler ────────────────────────────────────────────────────────
-async def handle(websocket):
-    """
-    Tarayıcıdan binary mesaj olarak Float32Array gelir.
-    Python bunu numpy array'e çevirir, pitch hesaplar, JSON döner.
-    """
-    print(f"[SERVER] Bağlantı: {websocket.remote_address}")
-    try:
-        async for message in websocket:
-            # Tarayıcı Float32Array'i binary olarak gönderir
-            if isinstance(message, bytes):
-                # Her 4 byte = 1 float32 örnek
-                n_samples = len(message) // 4
-                data = np.array(struct.unpack(f'{n_samples}f', message), dtype=np.float32)
-            else:
-                # Beklenmedik metin mesajı — atla
-                continue
+async def ws_handler(request):
+    """aiohttp WebSocket endpoint — /ws"""
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
 
-            # Sessizlik kontrolü
+    print(f"[WS] Bağlantı: {request.remote}")
+
+    async for msg in ws:
+        if msg.type == web.WSMsgType.BINARY:
+            n       = len(msg.data) // 4
+            data    = np.array(struct.unpack(f'{n}f', msg.data), dtype=np.float32)
+
             if rms(data) < 0.008:
-                await websocket.send(json.dumps({"silent": True}))
+                await ws.send_str(json.dumps({"silent": True}))
                 continue
 
-            # Pitch tespiti
             pitch = detect_pitch(data, SAMPLE_RATE)
 
             if pitch and 60 < pitch < 1200:
@@ -143,21 +125,30 @@ async def handle(websocket):
             else:
                 payload = {"silent": True}
 
-            await websocket.send(json.dumps(payload))
+            await ws.send_str(json.dumps(payload))
 
-    except websockets.exceptions.ConnectionClosedOK:
-        print("[SERVER] Bağlantı düzgün kapatıldı.")
-    except Exception as e:
-        print(f"[SERVER] Hata: {e}")
+        elif msg.type == web.WSMsgType.ERROR:
+            print(f"[WS] Hata: {ws.exception()}")
+
+    print("[WS] Bağlantı kapatıldı.")
+    return ws
 
 
-# ─── Sunucu ───────────────────────────────────────────────────────────────────
-async def main():
-    print(f"[SERVER] Başlatılıyor → ws://{WS_HOST}:{WS_PORT}")
-    async with websockets.serve(handle, WS_HOST, WS_PORT):
-        print("[SERVER] Hazır — tarayıcı bağlantısı bekleniyor.")
-        await asyncio.Future()
+# ─── HTTP: statik dosyaları sun ───────────────────────────────────────────────
+async def serve_index(request):
+    return web.FileResponse("index.html")
+
+async def serve_css(request):
+    return web.FileResponse("style.css")
+
+
+# ─── Uygulama ─────────────────────────────────────────────────────────────────
+app = web.Application()
+app.router.add_get("/",          serve_index)
+app.router.add_get("/style.css", serve_css)
+app.router.add_get("/ws",        ws_handler)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    print(f"[SERVER] http://0.0.0.0:{PORT}  üzerinde başlatılıyor...")
+    web.run_app(app, host="0.0.0.0", port=PORT)

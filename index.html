@@ -11,10 +11,8 @@
     <div class="tuner-container">
         <h1>Gitar Akortçu</h1>
 
-        <!-- Bağlantı durumu -->
         <div class="ws-status" id="ws-status">⬤ Bağlı değil</div>
 
-        <!-- Yarım daire gauge -->
         <div class="gauge">
             <div class="gauge-marks">
                 <span class="mark mark-left">♭</span>
@@ -25,14 +23,12 @@
             <div class="center-point"></div>
         </div>
 
-        <!-- Nota ve frekans -->
         <div class="note-display">
             <span id="current-note">—</span>
             <p id="status-text">Standart Akort</p>
             <small id="freq-text"></small>
         </div>
 
-        <!-- Tel seçimi -->
         <div class="strings">
             <button class="string-btn" onclick="selectString(0)">E</button>
             <button class="string-btn" onclick="selectString(1)">A</button>
@@ -42,19 +38,24 @@
             <button class="string-btn active" onclick="selectString(5)">e</button>
         </div>
 
-        <button class="start-btn" id="start-btn" onclick="toggleConnection()">
+        <button class="start-btn" id="start-btn" onclick="toggleMic()">
             Mikrofonu Başlat
         </button>
     </div>
 
     <script>
-        // ─── WebSocket URL (http → ws, https → wss otomatik) ─────────────────
+        // ─── WebSocket URL (http→ws, https→wss otomatik) ──────────────────────
         const WS_PROTO = location.protocol === 'https:' ? 'wss' : 'ws';
         const WS_URL   = `${WS_PROTO}://${location.hostname || 'localhost'}:8765`;
 
-        let ws          = null;
-        let connected   = false;
-        let selectedStr = 5;
+        let ws            = null;
+        let micRunning    = false;
+        let audioCtx      = null;
+        let micSource     = null;
+        let processor     = null;
+        let micStream     = null;
+        let selectedStr   = 5;
+        const CHUNK       = 4096;   // Python tarafıyla eşleşmeli
 
         // ─── Tel seçimi ───────────────────────────────────────────────────────
         function selectString(i) {
@@ -64,96 +65,119 @@
             );
         }
 
-        // ─── Bağlan / Kes ─────────────────────────────────────────────────────
-        function toggleConnection() {
-            if (!connected) connect();
-            else            disconnect();
+        // ─── Başlat / Durdur ──────────────────────────────────────────────────
+        async function toggleMic() {
+            if (!micRunning) await startMic();
+            else             stopMic();
         }
 
-        function connect() {
-            try { ws = new WebSocket(WS_URL); }
-            catch(e) { setWsIndicator(false, true); return; }
+        async function startMic() {
+            // 1) WebSocket bağla
+            ws = new WebSocket(WS_URL);
+            ws.binaryType = 'arraybuffer';
 
-            ws.onopen = () => {
-                connected = true;
-                document.getElementById('start-btn').textContent = 'Durdur';
-                document.getElementById('start-btn').classList.add('active');
-                setWsIndicator(true);
+            await new Promise((resolve, reject) => {
+                ws.onopen  = resolve;
+                ws.onerror = reject;
+            }).catch(() => {
+                setWsIndicator('error');
+                setStatus('Sunucuya bağlanılamadı!', 'error');
+                return;
+            });
+
+            setWsIndicator('ok');
+
+            // 2) Mikrofon aç (HTTPS veya localhost'ta çalışır)
+            try {
+                micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            } catch(e) {
+                setStatus('Mikrofon izni reddedildi!', 'error');
+                ws.close();
+                return;
+            }
+
+            // 3) Web Audio pipeline: mikrofon → ScriptProcessor → WebSocket
+            audioCtx  = new AudioContext({ sampleRate: 44100 });
+            micSource = audioCtx.createMediaStreamSource(micStream);
+            processor = audioCtx.createScriptProcessor(CHUNK, 1, 1);
+
+            processor.onaudioprocess = (e) => {
+                if (ws.readyState !== WebSocket.OPEN) return;
+                // Float32Array → binary → Python'a gönder
+                const samples = e.inputBuffer.getChannelData(0);
+                ws.send(samples.buffer);
             };
 
+            micSource.connect(processor);
+            processor.connect(audioCtx.destination);
+
+            // 4) Python'dan gelen sonuçları dinle
             ws.onmessage = (ev) => {
                 try { handleData(JSON.parse(ev.data)); } catch(_) {}
             };
 
             ws.onclose = () => {
-                connected = false;
-                document.getElementById('start-btn').textContent = 'Mikrofonu Başlat';
-                document.getElementById('start-btn').classList.remove('active');
-                setWsIndicator(false);
-                resetUI();
+                stopMic();
             };
 
-            ws.onerror = () => {
-                setWsIndicator(false, true);
-                setStatus('Sunucuya ulaşılamadı!', 'error');
-            };
+            micRunning = true;
+            document.getElementById('start-btn').textContent = 'Durdur';
+            document.getElementById('start-btn').classList.add('active');
         }
 
-        function disconnect() {
-            if (ws) ws.close();
+        function stopMic() {
+            if (processor)  { processor.disconnect();  processor  = null; }
+            if (micSource)  { micSource.disconnect();  micSource  = null; }
+            if (audioCtx)   { audioCtx.close();        audioCtx   = null; }
+            if (micStream)  { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+            if (ws && ws.readyState === WebSocket.OPEN) ws.close();
+
+            micRunning = false;
+            document.getElementById('start-btn').textContent = 'Mikrofonu Başlat';
+            document.getElementById('start-btn').classList.remove('active');
+            setWsIndicator('off');
+            resetUI();
         }
 
-        function setWsIndicator(ok, err = false) {
+        // ─── WS durum göstergesi ──────────────────────────────────────────────
+        function setWsIndicator(state) {
             const el = document.getElementById('ws-status');
-            if (err)      { el.textContent = '⬤ Hata';        el.className = 'ws-status error'; }
-            else if (ok)  { el.textContent = '⬤ Bağlandı';    el.className = 'ws-status ok';    }
-            else          { el.textContent = '⬤ Bağlı değil'; el.className = 'ws-status';       }
+            const map = {
+                ok:    ['⬤ Bağlandı',    'ws-status ok'],
+                error: ['⬤ Hata',        'ws-status error'],
+                off:   ['⬤ Bağlı değil', 'ws-status'],
+            };
+            [el.textContent, el.className] = map[state] ?? map.off;
         }
 
-        // ─── Gelen veriyi UI'a yansıt ─────────────────────────────────────────
+        // ─── Python'dan gelen veriyi UI'a yansıt ─────────────────────────────
         function handleData(data) {
             if (data.silent) {
                 setNeedle(0);
                 setStatus('Ses bekleniyor...', '');
                 return;
             }
-
             const { note, octave, cents, freq } = data;
-
-            // Nota
             document.getElementById('current-note').textContent = note + octave;
             document.getElementById('freq-text').textContent    = freq + ' Hz';
-
-            // İğne: cents -50..+50 → açı -75°..+75°
             setNeedle(cents);
-
-            // Durum mesajı ve renk
-            if (Math.abs(cents) <= 5) {
-                setStatus('✓ Tam Akort', 'in-tune');
-            } else if (cents > 5) {
-                setStatus('▲ Teli Gevşet', 'sharp');
-            } else {
-                setStatus('▼ Teli Ger', 'flat');
-            }
+            if      (Math.abs(cents) <= 5) setStatus('✓ Tam Akort',    'in-tune');
+            else if (cents > 5)            setStatus('▲ Teli Gevşet',  'sharp');
+            else                           setStatus('▼ Teli Ger',     'flat');
         }
 
-        // ─── Gauge iğnesi ────────────────────────────────────────────────────
-        // cents: -50 → -75°  |  0 → 0°  |  +50 → +75°
+        // ─── Gauge iğnesi  (cents -50..+50 → açı -75°..+75°) ─────────────────
         function setNeedle(cents) {
             const angle = Math.max(-75, Math.min(75, cents * 1.5));
             document.getElementById('needle').style.transform =
                 `translateX(-50%) rotate(${angle}deg)`;
         }
 
-        // ─── Durum metni + renk ───────────────────────────────────────────────
         function setStatus(text, cls) {
-            const noteEl   = document.getElementById('current-note');
-            const statusEl = document.getElementById('status-text');
-            statusEl.textContent = text;
-            noteEl.className     = cls;
+            document.getElementById('status-text').textContent  = text;
+            document.getElementById('current-note').className   = cls;
         }
 
-        // ─── Sıfırla ─────────────────────────────────────────────────────────
         function resetUI() {
             document.getElementById('current-note').textContent = '—';
             document.getElementById('current-note').className   = '';

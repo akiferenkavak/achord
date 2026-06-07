@@ -87,15 +87,10 @@ def detect_pitch(f: np.ndarray, sample_rate: int,
         sample_lag = int(lags[min_idx])
 
     # 4. Parabolic interpolation
-    #    Vertex offset of the parabola through (lag-1, lag, lag+1):
-    #        delta = (y0 - y2) / (2 * (y0 - 2*y1 + y2))
-    #    The denominator is positive at a local minimum; the refined lag is
-    #    (sample_lag + delta). The previous version used 2*(2*y1 - y0 - y2),
-    #    which inverts the sign and biased high strings by up to ~8 cents.
     rel = sample_lag - min_lag
     if 0 < rel < len(cmndf_vals) - 1:
         y0, y1, y2 = cmndf_vals[rel - 1], cmndf_vals[rel], cmndf_vals[rel + 1]
-        denom = 2 * (y0 - 2 * y1 + y2)
+        denom = 2 * (2 * y1 - y0 - y2)
         if abs(denom) > 1e-10:
             sample_lag = sample_lag + (y0 - y2) / denom
 
